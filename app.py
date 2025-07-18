@@ -1,35 +1,56 @@
 import streamlit as st
-from transformers import pipeline
+import requests
 from PIL import Image
-import torch
 import io
+import base64
 
-st.set_page_config(page_title="WeCare Clinical AI", layout="centered")
+# -- SETUP --
+st.set_page_config(page_title="WeCare MedGemma Assistant", layout="centered")
+st.title("🧠 WeCare Clinical AI Assistant")
+st.write("Upload a clinical image and enter your question. The AI will interpret it.")
 
-st.title("🧠 WeCare MedGemma Assistant")
-st.write("Upload a medical image and enter your clinical question:")
+# -- INPUTS --
+uploaded_file = st.file_uploader("📤 Upload medical image", type=["png", "jpg", "jpeg"])
+prompt = st.text_input("💬 Clinical question", "Describe this image")
 
-uploaded_file = st.file_uploader("Upload Image", type=["jpg", "jpeg", "png"])
-prompt = st.text_input("Clinical Question", "Describe this image")
+# -- Hugging Face Inference API Settings --
+API_URL = "https://api-inference.huggingface.co/models/google/medgemma-4b-it"
+HF_TOKEN = st.secrets["HF_TOKEN"]  # stored securely in Streamlit Cloud Secrets
+headers = {
+    "Authorization": f"Bearer {HF_TOKEN}",
+    "Content-Type": "application/json"
+}
 
+# -- Convert image to base64 (for API payload) --
+def encode_image(image):
+    buffered = io.BytesIO()
+    image.save(buffered, format="PNG")
+    return base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+# -- Send to Hugging Face API --
+def query_medgemma(prompt, image):
+    base64_image = encode_image(image)
+    payload = {
+        "inputs": {
+            "past_user_inputs": [],
+            "text": prompt,
+            "images": [base64_image]
+        }
+    }
+    response = requests.post(API_URL, headers=headers, json=payload)
+    return response.json()
+
+# -- RUN INFERENCE --
 if uploaded_file and prompt:
     image = Image.open(uploaded_file).convert("RGB")
-
     st.image(image, caption="Uploaded Image", use_column_width=True)
-    st.write("Processing...")
+    with st.spinner("🧠 AI is thinking..."):
+        result = query_medgemma(prompt, image)
 
-    pipe = pipeline(
-        "image-text-to-text",
-        model="google/medgemma-4b-it",
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        device=0 if torch.cuda.is_available() else -1,
-    )
-
-    messages = [
-        {"role": "system", "content": [{"type": "text", "text": "You are an expert radiologist."}]},
-        {"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image", "image": image}]}
-    ]
-
-    output = pipe(text=messages, max_new_tokens=200)
     st.markdown("### ✅ AI Response:")
-    st.success(output[0]["generated_text"][-1]["content"])
+    try:
+        answer = result[0]["generated_text"] if isinstance(result, list) else result.get("generated_text", "")
+        st.success(answer)
+    except:
+        st.error("⚠️ Error: Could not generate a valid response.")
+        st.json(result)
